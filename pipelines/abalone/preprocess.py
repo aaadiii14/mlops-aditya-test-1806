@@ -1,120 +1,83 @@
-"""Feature engineers the abalone dataset."""
+# Importing the libraries
 import argparse
 import logging
-import os
 import pathlib
-import requests
-import tempfile
 
 import boto3
 import numpy as np
 import pandas as pd
+import pickle
+import os
+import os
 
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+os.system('pip install --upgrade pip')
+os.system('pip install sagemaker')
+
+import sagemaker
+import sagemaker.session
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelBinarizer
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 
-
-# Since we get a headerless CSV file we specify the column names here.
-feature_columns_names = [
-    "sex",
-    "length",
-    "diameter",
-    "height",
-    "whole_weight",
-    "shucked_weight",
-    "viscera_weight",
-    "shell_weight",
-]
-label_column = "rings"
-
-feature_columns_dtype = {
-    "sex": str,
-    "length": np.float64,
-    "diameter": np.float64,
-    "height": np.float64,
-    "whole_weight": np.float64,
-    "shucked_weight": np.float64,
-    "viscera_weight": np.float64,
-    "shell_weight": np.float64,
-}
-label_column_dtype = {"rings": np.float64}
-
-
-def merge_two_dicts(x, y):
-    """Merges two dicts, returning a new copy."""
-    z = x.copy()
-    z.update(y)
-    return z
-
+boto3.Session().region_name
 
 if __name__ == "__main__":
     logger.debug("Starting preprocessing.")
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input-data", type=str, required=True)
-    args = parser.parse_args()
-
+    
+# Change the bucket name    
+    bucket = "sagemaker-us-east-1-503936503418"
+    my_region = boto3.session.Session().region_name
+    
+    
     base_dir = "/opt/ml/processing"
-    pathlib.Path(f"{base_dir}/data").mkdir(parents=True, exist_ok=True)
-    input_data = args.input_data
-    bucket = input_data.split("/")[2]
-    key = "/".join(input_data.split("/")[3:])
+    logger.debug("Reading data.")
+    
+# Check the key value
+    s3_client = boto3.client("s3")
+    df = pd.read_csv(s3_client.get_object(Bucket=bucket, Key='tourism.csv').get("Body"))
+    
 
-    logger.info("Downloading data from bucket: %s, key: %s", bucket, key)
-    fn = f"{base_dir}/data/abalone-dataset.csv"
-    s3 = boto3.resource("s3")
-    s3.Bucket(bucket).download_file(key, fn)
+    df = df.drop(["CustomerID"], axis=1)
 
-    logger.debug("Reading downloaded data.")
-    df = pd.read_csv(
-        fn,
-        header=None,
-        names=feature_columns_names + [label_column],
-        dtype=merge_two_dicts(feature_columns_dtype, label_column_dtype),
-    )
-    os.unlink(fn)
+    
+    X, y = df.drop(['ProdTaken'], axis=1), df['ProdTaken']
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+    X_val, X_test, y_val, y_test = train_test_split(X_test, y_test, test_size=0.4)
+    
+    obj_cols = X_train.select_dtypes(include=["object"]).columns
+    num_cols = X_train.select_dtypes(exclude=["object"]).columns
+    
+    one_hot = OneHotEncoder()
+    s_scaler = StandardScaler()
+    
+    one_hot = one_hot.fit(X_train[obj_cols])
+    s_scaler = s_scaler.fit(X_train[num_cols])
+    # Convert categorical variables into dummy/indicator variables.
+    a = one_hot.transform(X_train[obj_cols]).toarray()
+    b = s_scaler.transform(X_train[num_cols])
+    X_train = np.c_[a, b]
+    X_val = np.c_[one_hot.transform(X_val[obj_cols]).toarray(), s_scaler.transform(X_val[num_cols])]
+    X_test = np.c_[one_hot.transform(X_test[obj_cols]).toarray(), s_scaler.transform(X_test[num_cols])]
+    
+    lb = LabelBinarizer().fit(y_train)
+    y_train = lb.transform(y_train)
+    y_val = lb.transform(y_val)
+    y_test = lb.transform(y_test)
+    # Store Transformations
+    trans = {
+        'One_Hot': one_hot,
+        'scaler': s_scaler,
+        'label': lb,
+        'obj_cols': list(obj_cols),
+        'num_cols': list(num_cols)
+    }
 
-    logger.debug("Defining transformers.")
-    numeric_features = list(feature_columns_names)
-    numeric_features.remove("sex")
-    numeric_transformer = Pipeline(
-        steps=[("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]
-    )
-
-    categorical_features = ["sex"]
-    categorical_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore")),
-        ]
-    )
-
-    preprocess = ColumnTransformer(
-        transformers=[
-            ("num", numeric_transformer, numeric_features),
-            ("cat", categorical_transformer, categorical_features),
-        ]
-    )
-
-    logger.info("Applying transforms.")
-    y = df.pop("rings")
-    X_pre = preprocess.fit_transform(df)
-    y_pre = y.to_numpy().reshape(len(y), 1)
-
-    X = np.concatenate((y_pre, X_pre), axis=1)
-
-    logger.info("Splitting %d rows of data into train, validation, test datasets.", len(X))
-    np.random.shuffle(X)
-    train, validation, test = np.split(X, [int(0.7 * len(X)), int(0.85 * len(X))])
-
-    logger.info("Writing out datasets to %s.", base_dir)
-    pd.DataFrame(train).to_csv(f"{base_dir}/train/train.csv", header=False, index=False)
-    pd.DataFrame(validation).to_csv(
-        f"{base_dir}/validation/validation.csv", header=False, index=False
-    )
-    pd.DataFrame(test).to_csv(f"{base_dir}/test/test.csv", header=False, index=False)
+    # Split the data
+    pd.DataFrame(np.c_[y_train, X_train]).to_csv(f"{base_dir}/train/train.csv", header=False, index=False)
+    pd.DataFrame(np.c_[y_val, X_val]).to_csv(f"{base_dir}/validation/validation.csv", header=False, index=False)
+    pd.DataFrame(np.c_[y_test, X_test]).to_csv(f"{base_dir}/test/test.csv", header=False, index=False)

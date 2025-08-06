@@ -1,13 +1,3 @@
-"""Example workflow pipeline script for abalone pipeline.
-
-                                               . -ModelStep
-                                              .
-    Process-> Train -> Evaluate -> Condition .
-                                              .
-                                               . -(stop)
-
-Implements a get_pipeline(**kwargs) method.
-"""
 import os
 
 import boto3
@@ -127,13 +117,13 @@ def get_pipeline(
     sagemaker_project_name=None,
     role=None,
     default_bucket=None,
-    model_package_group_name="AbalonePackageGroup",
-    pipeline_name="AbalonePipeline",
-    base_job_prefix="Abalone",
+    model_package_group_name="TourismPackageGroup",
+    pipeline_name="TourismPipeline",
+    base_job_prefix="Tourism",
     processing_instance_type="ml.m5.xlarge",
     training_instance_type="ml.m5.xlarge",
 ):
-    """Gets a SageMaker ML Pipeline instance working with on abalone data.
+    """Gets a SageMaker ML Pipeline instance working with on Tourism data.
 
     Args:
         region: AWS region to create and run the pipeline.
@@ -156,7 +146,7 @@ def get_pipeline(
     )
     input_data = ParameterString(
         name="InputDataUrl",
-        default_value=f"s3://sagemaker-servicecatalog-seedcode-{region}/dataset/abalone-dataset.csv",
+        default_value=f"s3://sagemaker-servicecatalog-seedcode-{region}/dataset/Tourism-dataset.csv",
     )
 
     # processing step for feature engineering
@@ -164,7 +154,7 @@ def get_pipeline(
         framework_version="0.23-1",
         instance_type=processing_instance_type,
         instance_count=processing_instance_count,
-        base_job_name=f"{base_job_prefix}/sklearn-abalone-preprocess",
+        base_job_name=f"{base_job_prefix}/sklearn-Tourism-preprocess",
         sagemaker_session=pipeline_session,
         role=role,
     )
@@ -178,12 +168,12 @@ def get_pipeline(
         arguments=["--input-data", input_data],
     )
     step_process = ProcessingStep(
-        name="PreprocessAbaloneData",
+        name="PreprocessTourismData",
         step_args=step_args,
     )
 
     # training step for generating model artifacts
-    model_path = f"s3://{sagemaker_session.default_bucket()}/{base_job_prefix}/AbaloneTrain"
+    model_path = f"s3://{sagemaker_session.default_bucket()}/{base_job_prefix}/TourismTrain"
     image_uri = sagemaker.image_uris.retrieve(
         framework="xgboost",
         region=region,
@@ -196,7 +186,7 @@ def get_pipeline(
         instance_type=training_instance_type,
         instance_count=1,
         output_path=model_path,
-        base_job_name=f"{base_job_prefix}/abalone-train",
+        base_job_name=f"{base_job_prefix}/Tourism-train",
         sagemaker_session=pipeline_session,
         role=role,
     )
@@ -227,7 +217,7 @@ def get_pipeline(
         },
     )
     step_train = TrainingStep(
-        name="TrainAbaloneModel",
+        name="TrainTourismModel",
         step_args=step_args,
     )
 
@@ -237,7 +227,7 @@ def get_pipeline(
         command=["python3"],
         instance_type=processing_instance_type,
         instance_count=1,
-        base_job_name=f"{base_job_prefix}/script-abalone-eval",
+        base_job_name=f"{base_job_prefix}/script-Tourism-eval",
         sagemaker_session=pipeline_session,
         role=role,
     )
@@ -260,12 +250,12 @@ def get_pipeline(
         code=os.path.join(BASE_DIR, "evaluate.py"),
     )
     evaluation_report = PropertyFile(
-        name="AbaloneEvaluationReport",
+        name="TourismEvaluationReport",
         output_name="evaluation",
         path="evaluation.json",
     )
     step_eval = ProcessingStep(
-        name="EvaluateAbaloneModel",
+        name="EvaluateTourismModel",
         step_args=step_args,
         property_files=[evaluation_report],
     )
@@ -295,7 +285,7 @@ def get_pipeline(
         model_metrics=model_metrics,
     )
     step_register = ModelStep(
-        name="RegisterAbaloneModel",
+        name="RegisterTourismModel",
         step_args=step_args,
     )
 
@@ -304,12 +294,12 @@ def get_pipeline(
         left=JsonGet(
             step_name=step_eval.name,
             property_file=evaluation_report,
-            json_path="regression_metrics.mse.value"
+            json_path="binary_classification_metrics.accuracy.value"
         ),
         right=6.0,
     )
     step_cond = ConditionStep(
-        name="CheckMSEAbaloneEvaluation",
+        name="CheckAUCTourismEvaluation",
         conditions=[cond_lte],
         if_steps=[step_register],
         else_steps=[],
